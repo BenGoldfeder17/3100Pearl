@@ -301,6 +301,9 @@ def scrape_with_playwright(page, url, source_name):
         # ── Strategy 3: Target specific RentCafe patterns ────────────
         units.extend(_extract_rentcafe_units(page, source_name, url))
 
+        # ── Strategy 4: JD FloorPlans widget (with card screenshots) ──
+        units.extend(_extract_jd_unit_cards(page, source_name, url))
+
         print(f"    ✓ {source_name}: {len(units)} raw listings extracted")
 
     except Exception as e:
@@ -484,57 +487,6 @@ def _extract_rentcafe_units(page, source, url):
                 });
             }
 
-            // JD FloorPlans unit cards (Kairoi/RealPage widget)
-            const jdCards = document.querySelectorAll('[data-jd-fp-selector="unit-card"]');
-            for (const card of jdCards) {
-                const allSpans = card.querySelectorAll('span');
-                const spanTexts = [];
-                for (const s of allSpans) {
-                    const t = s.textContent.trim();
-                    if (t && t.length < 50) spanTexts.push(t);
-                }
-
-                const unitEl = card.querySelector('.jd-fp-card-info__title--large');
-                const priceEl = card.querySelector('[data-jd-fp-adp="display"]');
-                const availEl = card.querySelector('.jd-fp-card-info__text--brand');
-                const imgEl = card.querySelector('img');
-
-                // Extract fields from spans
-                let bedType = '';
-                let bathCount = '';
-                let sqft = null;
-                let planName = '';
-                for (const t of spanTexts) {
-                    if (/studio/i.test(t)) bedType = 'Studio';
-                    else if (/\\d+\\s*bed/i.test(t)) bedType = t;
-                    if (/\\d+\\s*bath/i.test(t)) bathCount = t;
-                    const sqftM = t.match(/(\\d{3,4})\\s*sq/i);
-                    if (sqftM) sqft = sqftM[1];
-                    // Plan name is typically first span, short uppercase like "A2R", "S1R"
-                    if (/^[A-Z][A-Z0-9]{1,4}R?$/i.test(t) && !planName) planName = t;
-                }
-
-                if (priceEl) {
-                    const unitNum = unitEl ? unitEl.textContent.trim().replace(/^#/, '') : '';
-                    // Derive floor from unit number (e.g. B-121 -> floor 1, C-305 -> floor 3)
-                    const floorMatch = unitNum.match(/[A-Z]-?(\\d)/i);
-                    const floor = floorMatch ? floorMatch[1] : null;
-
-                    units.push({
-                        text: bedType,
-                        planName: planName,
-                        beds: bedType,
-                        baths: bathCount,
-                        price: priceEl.textContent,
-                        sqft: sqft,
-                        date: availEl ? availEl.textContent.replace(/available\\s*/i, '').trim() : null,
-                        unit: unitNum,
-                        floor: floor,
-                        image: imgEl ? imgEl.src : null,
-                    });
-                }
-            }
-
             // Also grab from any iframes (some RentCafe sites use these)
             try {
                 const iframes = document.querySelectorAll('iframe');
@@ -581,6 +533,81 @@ def _extract_rentcafe_units(page, source, url):
         print(f"    ⚠ RentCafe extraction error: {e}")
 
     return units
+
+
+def _extract_jd_unit_cards(page, source, url):
+    """Extract unit data from JD FloorPlans widget cards and screenshot each card."""
+    units = []
+    try:
+        cards = page.query_selector_all('[data-jd-fp-selector="unit-card"]')
+        for card in cards:
+            data = card.evaluate("""(card) => {
+                const allSpans = card.querySelectorAll('span');
+                const spanTexts = [];
+                for (const s of allSpans) {
+                    const t = s.textContent.trim();
+                    if (t && t.length < 50) spanTexts.push(t);
+                }
+
+                const unitEl = card.querySelector('.jd-fp-card-info__title--large');
+                const priceEl = card.querySelector('[data-jd-fp-adp="display"]');
+                const availEl = card.querySelector('.jd-fp-card-info__text--brand');
+
+                let bedType = '', bathCount = '', sqft = null, planName = '';
+                for (const t of spanTexts) {
+                    if (/studio/i.test(t)) bedType = 'Studio';
+                    else if (/\\d+\\s*bed/i.test(t)) bedType = t;
+                    if (/\\d+\\s*bath/i.test(t)) bathCount = t;
+                    const sqftM = t.match(/(\\d{3,4})\\s*sq/i);
+                    if (sqftM) sqft = sqftM[1];
+                    if (/^[A-Z][A-Z0-9]{1,4}R?$/i.test(t) && !planName) planName = t;
+                }
+
+                const unitNum = unitEl ? unitEl.textContent.trim().replace(/^#/, '') : '';
+                const floorMatch = unitNum.match(/[A-Z]-?(\\d)/i);
+
+                return {
+                    beds: bedType,
+                    baths: bathCount,
+                    planName: planName,
+                    price: priceEl ? priceEl.textContent : null,
+                    sqft: sqft,
+                    date: availEl ? availEl.textContent.replace(/available\\s*/i, '').trim() : null,
+                    unit: unitNum,
+                    floor: floorMatch ? floorMatch[1] : null,
+                };
+            }""")
+
+            price = parse_price(data.get("price"))
+            if not price:
+                continue
+
+            # Screenshot the card as PNG
+            card_png = None
+            try:
+                card_png = card.screenshot(type="png")
+            except Exception:
+                pass
+
+            units.append({
+                "source": source, "url": url,
+                "floor_plan": data.get("planName") or data.get("beds", ""),
+                "unit": data.get("unit", ""),
+                "type": data.get("beds", ""),
+                "beds": data.get("beds", ""),
+                "baths": data.get("baths", ""),
+                "floor": data.get("floor"),
+                "price": price,
+                "sqft": parse_sqft(data.get("sqft") or ""),
+                "available_date": parse_date_from_text(data.get("date") or ""),
+                "card_png": card_png,
+            })
+
+    except Exception as e:
+        print(f"    ⚠ JD card extraction error: {e}")
+
+    return units
+
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║  NOTIFICATION SYSTEM                                                    ║
@@ -630,11 +657,11 @@ def _notify_ntfy(title, message, priority="default", units=None):
         url = f"{CONFIG['ntfy_server']}/{CONFIG['ntfy_topic']}"
         success = False
 
-        # Collect units that have images for individual notifications
-        units_with_images = [u for u in (units or []) if u.get("image_url")]
-        units_without_images = [u for u in (units or []) if not u.get("image_url")]
+        # Collect units that have card screenshots
+        units_with_images = [u for u in (units or []) if u.get("card_png")]
+        units_without_images = [u for u in (units or []) if not u.get("card_png")]
 
-        # Send individual notifications with floor plan images
+        # Send individual notifications with card screenshot
         for u in units_with_images:
             p = f"${u['price']:,}/mo" if u.get("price") else "Price TBD"
             lines = []
@@ -651,17 +678,18 @@ def _notify_ntfy(title, message, priority="default", units=None):
                 lines.append(f"Available: {u['available_date']}")
             if u.get("floor_plan"):
                 lines.append(f"Plan: {u['floor_plan']}")
-            body = "\n".join(lines)
+            body_text = " | ".join(lines)
 
-            resp = requests.post(url, headers={
+            # Send PNG as binary body with message in headers
+            resp = requests.put(url, headers={
                 "Title": f"Unit {u.get('unit', '?')} - {p}",
+                "Message": body_text,
                 "Priority": priority,
                 "Tags": "house,mag",
                 "Click": URLS["live3100pearl_avail"],
                 "Actions": f"view, Open 3100 Pearl, {URLS['live3100pearl_avail']}",
-                "Attach": u["image_url"],
-                "Filename": "floorplan.svg",
-            }, data=body.encode("utf-8"), timeout=10)
+                "Filename": "floorplan.png",
+            }, data=u["card_png"], timeout=15)
             if resp.status_code == 200:
                 success = True
 
@@ -920,6 +948,10 @@ def run_scan():
         "count": len(matches),
     })
 
+    # Strip binary data before saving to JSON
+    def _json_safe(unit_list):
+        return [{k: v for k, v in u.items() if k != "card_png"} for u in unit_list]
+
     # Save history
     history = load_json("history.json")
     scan_key = datetime.now().strftime("%Y-%m-%d_%H:%M")
@@ -927,7 +959,7 @@ def run_scan():
         "matches": len(matches),
         "new": len(new_units),
         "removed": len(removed_hashes),
-        "units": matches,
+        "units": _json_safe(matches),
     }
     # Keep last 500 scans
     if len(history) > 500:
@@ -939,8 +971,8 @@ def run_scan():
     # Save latest for dashboard
     save_json("latest.json", {
         "scan_time": datetime.now().isoformat(),
-        "matches": matches,
-        "new_units": new_units,
+        "matches": _json_safe(matches),
+        "new_units": _json_safe(new_units),
     })
 
     # Print results
