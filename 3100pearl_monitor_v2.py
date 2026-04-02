@@ -487,32 +487,49 @@ def _extract_rentcafe_units(page, source, url):
             // JD FloorPlans unit cards (Kairoi/RealPage widget)
             const jdCards = document.querySelectorAll('[data-jd-fp-selector="unit-card"]');
             for (const card of jdCards) {
-                const spans = card.querySelectorAll('.jd-fp-card-info__text span');
+                const allSpans = card.querySelectorAll('span');
                 const spanTexts = [];
-                for (const s of spans) spanTexts.push(s.textContent.trim());
+                for (const s of allSpans) {
+                    const t = s.textContent.trim();
+                    if (t && t.length < 50) spanTexts.push(t);
+                }
 
                 const unitEl = card.querySelector('.jd-fp-card-info__title--large');
                 const priceEl = card.querySelector('[data-jd-fp-adp="display"]');
                 const availEl = card.querySelector('.jd-fp-card-info__text--brand');
                 const imgEl = card.querySelector('img');
 
-                // Extract bed/bath/sqft from spans like "1 bed", "1 bath", "702 sq. ft."
+                // Extract fields from spans
                 let bedType = '';
+                let bathCount = '';
                 let sqft = null;
+                let planName = '';
                 for (const t of spanTexts) {
                     if (/studio/i.test(t)) bedType = 'Studio';
                     else if (/\\d+\\s*bed/i.test(t)) bedType = t;
+                    if (/\\d+\\s*bath/i.test(t)) bathCount = t;
                     const sqftM = t.match(/(\\d{3,4})\\s*sq/i);
                     if (sqftM) sqft = sqftM[1];
+                    // Plan name is typically first span, short uppercase like "A2R", "S1R"
+                    if (/^[A-Z][A-Z0-9]{1,4}R?$/i.test(t) && !planName) planName = t;
                 }
 
                 if (priceEl) {
+                    const unitNum = unitEl ? unitEl.textContent.trim().replace(/^#/, '') : '';
+                    // Derive floor from unit number (e.g. B-121 -> floor 1, C-305 -> floor 3)
+                    const floorMatch = unitNum.match(/[A-Z]-?(\\d)/i);
+                    const floor = floorMatch ? floorMatch[1] : null;
+
                     units.push({
                         text: bedType,
+                        planName: planName,
+                        beds: bedType,
+                        baths: bathCount,
                         price: priceEl.textContent,
                         sqft: sqft,
                         date: availEl ? availEl.textContent.replace(/available\\s*/i, '').trim() : null,
-                        unit: unitEl ? unitEl.textContent.trim().replace(/^#/, '') : '',
+                        unit: unitNum,
+                        floor: floor,
                         image: imgEl ? imgEl.src : null,
                     });
                 }
@@ -548,9 +565,12 @@ def _extract_rentcafe_units(page, source, url):
                 continue
             units.append({
                 "source": source, "url": url,
-                "floor_plan": item.get("text", "").strip()[:60],
+                "floor_plan": item.get("planName") or item.get("text", "").strip()[:60],
                 "unit": item.get("unit", ""),
                 "type": item.get("text", ""),
+                "beds": item.get("beds", ""),
+                "baths": item.get("baths", ""),
+                "floor": item.get("floor"),
                 "price": price,
                 "sqft": parse_sqft(item.get("sqft") or ""),
                 "available_date": parse_date_from_text(item.get("date") or ""),
@@ -617,13 +637,24 @@ def _notify_ntfy(title, message, priority="default", units=None):
         # Send individual notifications with floor plan images
         for u in units_with_images:
             p = f"${u['price']:,}/mo" if u.get("price") else "Price TBD"
-            sqft = f" · {u['sqft']} SF" if u.get("sqft") else ""
-            avail = f" · Avail {u['available_date']}" if u.get("available_date") else ""
-            unit_label = f"Unit {u.get('unit', '?')}"
-            body = f"{unit_label} — {u.get('floor_plan', '?')}{sqft}{avail}"
+            lines = []
+            if u.get("beds"):
+                bed_bath = u["beds"]
+                if u.get("baths"):
+                    bed_bath += f", {u['baths']}"
+                lines.append(bed_bath)
+            if u.get("sqft"):
+                lines.append(f"{u['sqft']} sq ft")
+            if u.get("floor"):
+                lines.append(f"Floor {u['floor']}")
+            if u.get("available_date"):
+                lines.append(f"Available: {u['available_date']}")
+            if u.get("floor_plan"):
+                lines.append(f"Plan: {u['floor_plan']}")
+            body = "\n".join(lines)
 
             resp = requests.post(url, headers={
-                "Title": f"{unit_label}: {p}",
+                "Title": f"Unit {u.get('unit', '?')} - {p}",
                 "Priority": priority,
                 "Tags": "house,mag",
                 "Click": URLS["live3100pearl_avail"],
@@ -836,8 +867,15 @@ def print_results(matches, new_units, removed_count):
 
         print(f"\n  {icon} {u.get('floor_plan', 'Unknown')}{new_tag}")
         print(f"     💰 {price_str}  ({label})")
+        if u.get("beds"):
+            bed_bath = f"     🛏  {u['beds']}"
+            if u.get("baths"):
+                bed_bath += f", {u['baths']}"
+            print(bed_bath)
         if u.get("sqft"):
             print(f"     📐 {u['sqft']} sq ft")
+        if u.get("floor"):
+            print(f"     🏢 Floor {u['floor']}")
         if u.get("available_date"):
             print(f"     📅 Available: {u['available_date']}")
         if u.get("unit"):
