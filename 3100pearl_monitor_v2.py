@@ -494,6 +494,7 @@ def _extract_rentcafe_units(page, source, url):
                 const unitEl = card.querySelector('.jd-fp-card-info__title--large');
                 const priceEl = card.querySelector('[data-jd-fp-adp="display"]');
                 const availEl = card.querySelector('.jd-fp-card-info__text--brand');
+                const imgEl = card.querySelector('img');
 
                 // Extract bed/bath/sqft from spans like "1 bed", "1 bath", "702 sq. ft."
                 let bedType = '';
@@ -512,6 +513,7 @@ def _extract_rentcafe_units(page, source, url):
                         sqft: sqft,
                         date: availEl ? availEl.textContent.replace(/available\\s*/i, '').trim() : null,
                         unit: unitEl ? unitEl.textContent.trim().replace(/^#/, '') : '',
+                        image: imgEl ? imgEl.src : null,
                     });
                 }
             }
@@ -552,6 +554,7 @@ def _extract_rentcafe_units(page, source, url):
                 "price": price,
                 "sqft": parse_sqft(item.get("sqft") or ""),
                 "available_date": parse_date_from_text(item.get("date") or ""),
+                "image_url": item.get("image"),
             })
 
     except Exception as e:
@@ -568,7 +571,7 @@ def notify(title, message, units=None, priority="default"):
     sent = []
 
     if CONFIG["ntfy_enabled"]:
-        if _notify_ntfy(title, message, priority):
+        if _notify_ntfy(title, message, priority, units):
             sent.append("ntfy")
 
     if CONFIG["twilio_enabled"]:
@@ -595,22 +598,56 @@ def notify(title, message, units=None, priority="default"):
     return sent
 
 
-def _notify_ntfy(title, message, priority="default"):
+def _notify_ntfy(title, message, priority="default", units=None):
     """
     Send push notification via ntfy.sh.
     FREE, no signup. Install the ntfy app on your phone and
     subscribe to your topic to receive alerts.
+    Sends one notification per unit (with floor plan image) or a single
+    summary if no image URLs are available.
     """
     try:
         url = f"{CONFIG['ntfy_server']}/{CONFIG['ntfy_topic']}"
-        resp = requests.post(url, headers={
-            "Title": title,
-            "Priority": priority,      # min, low, default, high, urgent
-            "Tags": "house,mag",
-            "Click": URLS["live3100pearl_avail"],
-            "Actions": f"view, Open 3100 Pearl, {URLS['live3100pearl_avail']}",
-        }, data=message.encode("utf-8"), timeout=10)
-        return resp.status_code == 200
+        success = False
+
+        # Collect units that have images for individual notifications
+        units_with_images = [u for u in (units or []) if u.get("image_url")]
+        units_without_images = [u for u in (units or []) if not u.get("image_url")]
+
+        # Send individual notifications with floor plan images
+        for u in units_with_images:
+            p = f"${u['price']:,}/mo" if u.get("price") else "Price TBD"
+            sqft = f" · {u['sqft']} SF" if u.get("sqft") else ""
+            avail = f" · Avail {u['available_date']}" if u.get("available_date") else ""
+            unit_label = f"Unit {u.get('unit', '?')}"
+            body = f"{unit_label} — {u.get('floor_plan', '?')}{sqft}{avail}"
+
+            resp = requests.post(url, headers={
+                "Title": f"{unit_label}: {p}",
+                "Priority": priority,
+                "Tags": "house,mag",
+                "Click": URLS["live3100pearl_avail"],
+                "Actions": f"view, Open 3100 Pearl, {URLS['live3100pearl_avail']}",
+                "Attach": u["image_url"],
+                "Filename": "floorplan.svg",
+            }, data=body.encode("utf-8"), timeout=10)
+            if resp.status_code == 200:
+                success = True
+
+        # Send summary for any units without images
+        if units_without_images or not units_with_images:
+            remaining_msg = message if not units_with_images else format_unit_summary(units_without_images)
+            resp = requests.post(url, headers={
+                "Title": title,
+                "Priority": priority,
+                "Tags": "house,mag",
+                "Click": URLS["live3100pearl_avail"],
+                "Actions": f"view, Open 3100 Pearl, {URLS['live3100pearl_avail']}",
+            }, data=remaining_msg.encode("utf-8"), timeout=10)
+            if resp.status_code == 200:
+                success = True
+
+        return success
     except Exception as e:
         print(f"    ⚠ ntfy error: {e}")
         return False
