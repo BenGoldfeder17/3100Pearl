@@ -552,6 +552,7 @@ def _extract_jd_unit_cards(page, source, url):
                 const unitEl = card.querySelector('.jd-fp-card-info__title--large');
                 const priceEl = card.querySelector('[data-jd-fp-adp="display"]');
                 const availEl = card.querySelector('.jd-fp-card-info__text--brand');
+                const imgEl = card.querySelector('img');
 
                 let bedType = '', bathCount = '', sqft = null, planName = '';
                 for (const t of spanTexts) {
@@ -575,6 +576,7 @@ def _extract_jd_unit_cards(page, source, url):
                     date: availEl ? availEl.textContent.replace(/available\\s*/i, '').trim() : null,
                     unit: unitNum,
                     floor: floorMatch ? floorMatch[1] : null,
+                    image: imgEl ? imgEl.src : null,
                 };
             }""")
 
@@ -600,7 +602,7 @@ def _extract_jd_unit_cards(page, source, url):
                 "price": price,
                 "sqft": parse_sqft(data.get("sqft") or ""),
                 "available_date": parse_date_from_text(data.get("date") or ""),
-                "card_png": card_png,
+                "image_url": data.get("image"),
             })
 
     except Exception as e:
@@ -657,12 +659,8 @@ def _notify_ntfy(title, message, priority="default", units=None):
         url = f"{CONFIG['ntfy_server']}/{CONFIG['ntfy_topic']}"
         success = False
 
-        # Collect units that have card screenshots
-        units_with_images = [u for u in (units or []) if u.get("card_png")]
-        units_without_images = [u for u in (units or []) if not u.get("card_png")]
-
-        # Send individual notifications with card screenshot
-        for u in units_with_images:
+        # Send one notification per unit with details + action buttons
+        for u in (units or []):
             p = f"${u['price']:,}/mo" if u.get("price") else "Price TBD"
             lines = []
             if u.get("beds"):
@@ -676,33 +674,40 @@ def _notify_ntfy(title, message, priority="default", units=None):
                 lines.append(f"Floor {u['floor']}")
             if u.get("available_date"):
                 lines.append(f"Available: {u['available_date']}")
-            if u.get("floor_plan"):
-                lines.append(f"Plan: {u['floor_plan']}")
             body_text = " | ".join(lines)
 
-            # Send PNG as binary body with message in headers
-            resp = requests.put(url, headers={
+            headers = {
                 "Title": f"Unit {u.get('unit', '?')} - {p}",
-                "Message": body_text,
                 "Priority": priority,
                 "Tags": "house,mag",
                 "Click": URLS["live3100pearl_avail"],
-                "Actions": f"view, Open 3100 Pearl, {URLS['live3100pearl_avail']}",
-                "Filename": "floorplan.png",
-            }, data=u["card_png"], timeout=15)
+            }
+
+            # Add floor plan image as icon and action button
+            image_url = u.get("image_url")
+            if image_url:
+                headers["Icon"] = image_url
+                headers["Actions"] = (
+                    f"view, View Floor Plan, {image_url}; "
+                    f"view, Check Availability, {URLS['live3100pearl_avail']}"
+                )
+            else:
+                headers["Actions"] = f"view, Check Availability, {URLS['live3100pearl_avail']}"
+
+            resp = requests.post(url, headers=headers,
+                                 data=body_text.encode("utf-8"), timeout=10)
             if resp.status_code == 200:
                 success = True
 
-        # Send summary for any units without images
-        if units_without_images or not units_with_images:
-            remaining_msg = message if not units_with_images else format_unit_summary(units_without_images)
+        # If no units, send the summary message
+        if not units:
             resp = requests.post(url, headers={
                 "Title": title,
                 "Priority": priority,
                 "Tags": "house,mag",
                 "Click": URLS["live3100pearl_avail"],
-                "Actions": f"view, Open 3100 Pearl, {URLS['live3100pearl_avail']}",
-            }, data=remaining_msg.encode("utf-8"), timeout=10)
+                "Actions": f"view, Check Availability, {URLS['live3100pearl_avail']}",
+            }, data=message.encode("utf-8"), timeout=10)
             if resp.status_code == 200:
                 success = True
 
@@ -948,10 +953,6 @@ def run_scan():
         "count": len(matches),
     })
 
-    # Strip binary data before saving to JSON
-    def _json_safe(unit_list):
-        return [{k: v for k, v in u.items() if k != "card_png"} for u in unit_list]
-
     # Save history
     history = load_json("history.json")
     scan_key = datetime.now().strftime("%Y-%m-%d_%H:%M")
@@ -959,7 +960,7 @@ def run_scan():
         "matches": len(matches),
         "new": len(new_units),
         "removed": len(removed_hashes),
-        "units": _json_safe(matches),
+        "units": matches,
     }
     # Keep last 500 scans
     if len(history) > 500:
@@ -971,8 +972,8 @@ def run_scan():
     # Save latest for dashboard
     save_json("latest.json", {
         "scan_time": datetime.now().isoformat(),
-        "matches": _json_safe(matches),
-        "new_units": _json_safe(new_units),
+        "matches": matches,
+        "new_units": new_units,
     })
 
     # Print results
