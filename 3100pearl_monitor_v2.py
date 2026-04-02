@@ -54,7 +54,7 @@ CONFIG = {
                         "1br", "s1", "a1", "a2", "a3", "a4", "a5"],
     "max_rent":        2000,
     "preferred_rent":  1800,
-    "min_move_in":     "2026-07-01",
+    "min_move_in":     None,
 
     # ── Data Storage ────────────────────────────────────────────────────
     "data_dir":        Path.home() / ".3100pearl",
@@ -201,7 +201,7 @@ def is_target_type(type_str):
     return any(target in t for target in CONFIG["target_types"])
 
 def is_valid_move_in(date_str):
-    if not date_str:
+    if not date_str or not CONFIG["min_move_in"]:
         return True
     try:
         return date.fromisoformat(date_str) >= date.fromisoformat(CONFIG["min_move_in"])
@@ -776,7 +776,8 @@ def print_results(matches, new_units, removed_count):
     print(f"\n{'═' * 60}")
     print(f"  🏠 3100 PEARL AVAILABILITY MONITOR v2")
     print(f"  📅 {now}")
-    print(f"  🔍 Studio/1BR | ≤${CONFIG['max_rent']:,}/mo | {CONFIG['min_move_in']}+ move-in")
+    move_in_str = f" | {CONFIG['min_move_in']}+ move-in" if CONFIG["min_move_in"] else ""
+    print(f"  🔍 Studio/1BR | ≤${CONFIG['max_rent']:,}/mo{move_in_str}")
     print(f"{'═' * 60}")
 
     if not matches:
