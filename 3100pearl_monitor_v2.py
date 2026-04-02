@@ -52,7 +52,7 @@ CONFIG = {
     # ── Search Filters ──────────────────────────────────────────────────
     "target_types":    ["studio", "1 bed", "1 bedroom", "1 br", "1bd",
                         "1br", "s1", "a1", "a2", "a3", "a4", "a5"],
-    "max_rent":        2000,
+    "max_rent":        2100,
     "preferred_rent":  1800,
     "min_move_in":     None,
 
